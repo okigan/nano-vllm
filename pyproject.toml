@@ -41,4 +41,6 @@ dev = [
     "pytest-timeout>=2.4.0",
     "tqdm",
     "pytest-cov",
+    "junitparser",
+    "coverage[toml]",
 ]
