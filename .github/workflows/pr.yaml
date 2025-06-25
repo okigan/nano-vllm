@@ -1,4 +1,9 @@
+
 name: Run Pytest
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 on:
   pull_request:
@@ -24,12 +29,74 @@ jobs:
           uv venv .venv
           source .venv/bin/activate
 
-      - name: Install dependencies with uv
+      - name: Install dev dependencies with uv
         run: |
           source .venv/bin/activate
-          uv sync
+          uv sync --dev
 
       - name: Run tests with uv
         run: |
           source .venv/bin/activate
-          uv run pytest tests/ --maxfail=3 --disable-warnings  --durations=10  -v -rA --tb=short
+          uv run pytest tests/ \
+            --maxfail=3 \
+            --disable-warnings \
+            --durations=10 \
+            -v -rA --tb=short \
+            --junitxml=pytest-results.xml \
+            --cov=nanovllm \
+            --cov-report=xml \
+            --cov-report=term-missing
+
+      - name: Generate test summary
+        if: always()
+        run: |
+          source .venv/bin/activate
+          python -c "from junitparser import JUnitXml; xml = JUnitXml.fromfile('pytest-results.xml'); summary = f'# Pytest Results\\nTotal: {xml.tests} | Failures: {xml.failures} | Skipped: {xml.skipped} | Errors: {xml.errors}\\n'; summary += '\\n'.join([f'- {case.classname}::{case.name} ({case.time}s): {case.result}' for suite in xml for case in suite]); print(summary)" > pytest-summary.md
+        continue-on-error: true
+
+
+      - name: Generate coverage summary
+        if: always()
+        run: |
+          source .venv/bin/activate
+          coverage xml -i
+          coverage report --format=markdown > coverage-summary.md
+        continue-on-error: true
+
+      - name: Generate HTML coverage report
+        if: always()
+        run: |
+          source .venv/bin/activate
+          coverage html
+        continue-on-error: true
+
+      - name: Upload HTML coverage report
+        if: always() && !env.ACT
+        uses: actions/upload-artifact@v4
+        with:
+          name: html-coverage-report
+          path: htmlcov/
+
+      - name: Publish test summary
+        if: always()
+        run: |
+          cat pytest-summary.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Publish coverage summary
+        if: always()
+        run: |
+          cat coverage-summary.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload pytest results
+        if: always() && !env.ACT
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-results
+          path: pytest-results.xml
+
+      - name: Upload coverage report
+        if: always() && !env.ACT
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml

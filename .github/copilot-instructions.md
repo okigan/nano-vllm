@@ -58,6 +58,7 @@ We are working with a PyTorch-based LLM inference engine (nano-vllm) focused on 
 - **Unit Tests:** Write unit tests for all public methods and functions.
 - **Fixtures:** Use fixtures for setup and teardown of test environments.
 - **Assertions:** Use assert statements for testing expected outcomes.
+- **Dev Dependencies:** Always add test and coverage tools (e.g., pytest, pytest-cov) to the `[dependency-groups.dev]` section of `pyproject.toml` and install them in CI using `uv sync --dev`. Do not install them manually in the workflow.
 - **Logging:** Use logging for debugging and error messages.
 - **Parameterized Tests:** Use `pytest.mark.parametrize` for parameterized tests.
 - **Test Isolation:** Ensure tests are isolated and do not depend on each other.
