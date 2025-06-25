@@ -92,7 +92,16 @@ def main():    # Command line argument parsing for device overrides
     
     print("\nInitializing LLM...")
     # Pass enforce_eager mode for easier debugging
-    llm = LLM(path, enforce_eager=True, tensor_parallel_size=1)
+    # Hardcoded KV cache config for demonstration
+    kvcache_block_size = 16  # Number of tokens per KV cache block
+    num_kvcache_blocks = 2048  # Total number of KV cache blocks
+    llm = LLM(
+        path,
+        enforce_eager=True,
+        tensor_parallel_size=1,
+        kvcache_block_size=kvcache_block_size,
+        num_kvcache_blocks=num_kvcache_blocks,
+    )
     
     # Debug: Print basic model info
     print(f"Model path: {path}")
