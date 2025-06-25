@@ -54,6 +54,7 @@ jobs:
           python -c "from junitparser import JUnitXml; xml = JUnitXml.fromfile('pytest-results.xml'); summary = f'# Pytest Results\\nTotal: {xml.tests} | Failures: {xml.failures} | Skipped: {xml.skipped} | Errors: {xml.errors}\\n'; summary += '\\n'.join([f'- {case.classname}::{case.name} ({case.time}s): {case.result}' for suite in xml for case in suite]); print(summary)" > pytest-summary.md
         continue-on-error: true
 
+
       - name: Generate coverage summary
         if: always()
         run: |
@@ -61,6 +62,20 @@ jobs:
           coverage xml -i
           coverage report --format=markdown > coverage-summary.md
         continue-on-error: true
+
+      - name: Generate HTML coverage report
+        if: always()
+        run: |
+          source .venv/bin/activate
+          coverage html
+        continue-on-error: true
+
+      - name: Upload HTML coverage report
+        if: always() && !env.ACT
+        uses: actions/upload-artifact@v4
+        with:
+          name: html-coverage-report
+          path: htmlcov/
 
       - name: Publish test summary
         if: always()
