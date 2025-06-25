@@ -46,7 +46,7 @@ jobs:
         if: always()
         run: |
           source .venv/bin/activate
-          python -m pip install junitparser
+          uv pip install junitparser
           python -c "from junitparser import JUnitXml; xml = JUnitXml.fromfile('pytest-results.xml'); summary = f'# Pytest Results\\nTotal: {xml.tests} | Failures: {xml.failures} | Skipped: {xml.skipped} | Errors: {xml.errors}\\n'; summary += '\\n'.join([f'- {case.classname}::{case.name} ({case.time}s): {case.result}' for suite in xml for case in suite]); print(summary)" > pytest-summary.md
         continue-on-error: true
 
@@ -54,7 +54,7 @@ jobs:
         if: always()
         run: |
           source .venv/bin/activate
-          python -m pip install coverage[toml]
+          uv pip install "coverage[toml]"
           coverage xml -i
           coverage report --format=markdown > coverage-summary.md
         continue-on-error: true
