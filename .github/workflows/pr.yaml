@@ -4,7 +4,6 @@ name: Run Pytest
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
-  max-parallel: 3
 
 on:
   pull_request:
