@@ -11,11 +11,19 @@ def optional_torch_compile(fn):
     Control with env var USE_TORCH_COMPILE (default: on for CUDA, off for MPS/CPU).
     """
     use_compile = os.environ.get("USE_TORCH_COMPILE")
-    device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available() else "cpu"))
+    # Disable by default on NVIDIA Orin/Tegra (Jetson) platforms
+    is_tegra = False
+    try:
+        with open("/proc/device-tree/compatible", "rb") as f:
+            compat = f.read().lower()
+            if b"nvidia,tegra" in compat or b"nvidia,orin" in compat:
+                is_tegra = True
+    except Exception:
+        pass
     if use_compile is not None:
         enabled = use_compile.lower() in ("1", "true", "yes", "on")
     else:
-        enabled = device.type == "cuda"
+        enabled = not is_tegra
     if enabled and hasattr(torch, "compile"):
         return torch.compile(fn)
     return fn
