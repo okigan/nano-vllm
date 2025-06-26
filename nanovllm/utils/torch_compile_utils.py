@@ -1,5 +1,10 @@
+
+
 import os
 import torch
+import functools
+import logging
+logger = logging.getLogger(__name__)
 
 
 def optional_torch_compile(fn):
@@ -11,29 +16,33 @@ def optional_torch_compile(fn):
             ...
     Control with env var USE_TORCH_COMPILE (default: on for CUDA, off for MPS/CPU).
     """
+    if _should_use_torch_compile():
+        return torch.compile(fn)
+    return fn
 
+
+@functools.lru_cache(maxsize=1)
+def _should_use_torch_compile() -> bool:
+    """
+    Determines if torch.compile should be applied based on environment and device.
+    Returns:
+        bool: True if torch.compile should be used, False otherwise.
+    """
     if not hasattr(torch, "compile"):
-        return fn
-
+        logger.info("torch.compile is not available in this version of torch.")
+        return False
     use_torch_compile = os.environ.get("USE_TORCH_COMPILE")
-
     if use_torch_compile is not None:
         enabled = use_torch_compile.lower() in ("1", "true", "yes", "on")
-    else:
-        enabled = False
-
-    if enabled:
-        return torch.compile(fn)
-        
+        logger.info(f"USE_TORCH_COMPILE env var set to '{use_torch_compile}', enabled={enabled}")
+        return enabled
     is_tegra = _is_tegra_platform()
     is_mps = torch.backends.mps.is_available()
     is_nvidia = torch.cuda.is_available()
-
-    enabled = (not is_tegra) and (not is_mps) and (is_nvidia)
-
-    if enabled:
-        return torch.compile(fn)
-    return fn
+    logger.info(f"is_tegra={is_tegra}, is_mps={is_mps}, is_nvidia={is_nvidia}")
+    enabled = (not is_tegra) and (not is_mps) and is_nvidia
+    logger.info(f"torch.compile enabled by device logic: {enabled}")
+    return enabled
 
 def _is_tegra_platform() -> bool:
     """
