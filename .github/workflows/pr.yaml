@@ -76,16 +76,25 @@ jobs:
         with:
           name: html-coverage-report
           path: htmlcov/
+          if-no-files-found: ignore
 
       - name: Publish test summary
         if: always()
         run: |
-          cat pytest-summary.md >> $GITHUB_STEP_SUMMARY
+          if [ -f pytest-summary.md ]; then
+            cat pytest-summary.md >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## Test summary not available." >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: Publish coverage summary
         if: always()
         run: |
-          cat coverage-summary.md >> $GITHUB_STEP_SUMMARY
+          if [ -f coverage-summary.md ]; then
+            cat coverage-summary.md >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## Coverage summary not available." >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: Upload pytest results
         if: always() && !env.ACT
@@ -93,6 +102,7 @@ jobs:
         with:
           name: pytest-results
           path: pytest-results.xml
+          if-no-files-found: ignore
 
       - name: Upload coverage report
         if: always() && !env.ACT
@@ -100,3 +110,4 @@ jobs:
         with:
           name: coverage-report
           path: coverage.xml
+          if-no-files-found: ignore
