@@ -175,18 +175,6 @@ class BlockManager:
     def allocate(self, seq: Sequence) -> bool:
         """
         Allocate blocks for a sequence, reusing cached blocks when possible.
-        
-        This method allocates blocks for the entire sequence, attempting to reuse
-        cached blocks when the token sequences match (via hash comparison).
-        
-        Args:
-            seq: The sequence to allocate blocks for.
-            
-        Returns:
-            bool: True if allocation was successful.
-            
-        Raises:
-            RuntimeError: If there are not enough free blocks available.
         """
         # Clear any existing block table
         seq.block_table = []
@@ -208,20 +196,9 @@ class BlockManager:
             if cache_miss:
                 # Need to allocate a new block
                 if not self.free_block_ids:
-                    raise RuntimeError(f"No free blocks available for allocation. Needed: {blocks_needed}, Available: 0")
+                    raise RuntimeError("No free blocks available for allocation")
                 block_id = self.free_block_ids[0]
-                try:
-                    block = self._allocate_block(block_id)
-                except ValueError as e:
-                    # If allocation fails, try to recover by finding another free block
-                    if len(self.free_block_ids) > 1:
-                        self.free_block_ids.popleft()  # Remove the problematic block
-                        if not self.free_block_ids:
-                            raise RuntimeError(f"No free blocks available after allocation error: {str(e)}")
-                        block_id = self.free_block_ids[0]
-                        block = self._allocate_block(block_id)
-                    else:
-                        raise RuntimeError(f"Block allocation failed: {str(e)}")
+                block = self._allocate_block(block_id)
             else:
                 # Cache hit - reuse existing block
                 seq.num_cached_tokens += self.block_size
@@ -229,15 +206,7 @@ class BlockManager:
                 if block_id in self.used_block_ids:
                     block.ref_count += 1
                 else:
-                    # This shouldn't happen, but handle it gracefully
-                    try:
-                        block = self._allocate_block(block_id)
-                    except ValueError:
-                        # Block is somehow in an inconsistent state, allocate a new one
-                        if not self.free_block_ids:
-                            raise RuntimeError("No free blocks available for allocation")
-                        block_id = self.free_block_ids[0]
-                        block = self._allocate_block(block_id)
+                    block = self._allocate_block(block_id)
                     
             # Update the block with new hash and token IDs if needed
             if h != -1:
