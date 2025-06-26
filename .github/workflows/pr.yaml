@@ -11,7 +11,7 @@ on:
       - main
   pull_request:
     branches:
-      - '**'
+      - main
   workflow_dispatch:
     # Allows manual trigger on any branch
     inputs: {}
