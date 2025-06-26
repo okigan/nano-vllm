@@ -1,6 +1,7 @@
 import os
 import torch
 
+
 def optional_torch_compile(fn):
     """
     Decorator to optionally apply torch.compile to a function based on device and environment variable.
@@ -10,7 +11,20 @@ def optional_torch_compile(fn):
             ...
     Control with env var USE_TORCH_COMPILE (default: on for CUDA, off for MPS/CPU).
     """
-    use_compile = os.environ.get("USE_TORCH_COMPILE")
+
+    if not hasattr(torch, "compile"):
+        return fn
+
+    use_torch_compile = os.environ.get("USE_TORCH_COMPILE")
+
+    if use_torch_compile is not None:
+        enabled = use_torch_compile.lower() in ("1", "true", "yes", "on")
+    else:
+        enabled = False
+
+    if enabled:
+        return torch.compile(fn)
+        
     # Disable by default on NVIDIA Orin/Tegra (Jetson) platforms
     is_tegra = False
     try:
@@ -20,10 +34,20 @@ def optional_torch_compile(fn):
                 is_tegra = True
     except Exception:
         pass
-    if use_compile is not None:
-        enabled = use_compile.lower() in ("1", "true", "yes", "on")
+
+    is_mps = False
+    if torch.backends.mps.is_available():
+        is_mps = True
+
+    is_nvidia = False
+    if torch.cuda.is_available():
+        is_nvidia = True
+
+    if use_torch_compile is not None:
+        enabled = use_torch_compile.lower() in ("1", "true", "yes", "on")
     else:
-        enabled = not is_tegra
-    if enabled and hasattr(torch, "compile"):
+        enabled = (not is_tegra) and (not is_mps) and (is_nvidia)
+
+    if enabled:
         return torch.compile(fn)
     return fn
