@@ -119,11 +119,35 @@ class MPSOptimizedAttention(nn.Module):
         q = self.rotary_emb(q, cos, sin)
         k = self.rotary_emb(k, cos, sin)
 
-        # 5. Handle key-value cache for autoregressive generation
+        # 5. Handle key-value cache for autoregressive generation - optimized
         if layer_past is not None:
             past_key, past_value = layer_past
-            k = torch.cat([past_key, k], dim=1).contiguous()
-            v = torch.cat([past_value, v], dim=1).contiguous()
+            # Optimized concatenation for single token decode
+            if k.shape[1] == 1:  # Single token decode
+                batch_size, past_seq_len = past_key.shape[0], past_key.shape[1]
+                new_seq_len = past_seq_len + 1
+                
+                # Create new tensors with exact size needed
+                new_k = torch.empty(
+                    batch_size, new_seq_len, past_key.shape[2], past_key.shape[3],
+                    dtype=past_key.dtype, device=past_key.device
+                ).contiguous()
+                new_v = torch.empty(
+                    batch_size, new_seq_len, past_value.shape[2], past_value.shape[3],
+                    dtype=past_value.dtype, device=past_value.device
+                ).contiguous()
+                
+                # Copy in chunks
+                new_k[:, :past_seq_len] = past_key
+                new_k[:, past_seq_len:] = k
+                new_v[:, :past_seq_len] = past_value
+                new_v[:, past_seq_len:] = v
+                
+                k, v = new_k, new_v
+            else:
+                # Fall back to standard concatenation for multi-token sequences
+                k = torch.cat([past_key, k], dim=1).contiguous()
+                v = torch.cat([past_value, v], dim=1).contiguous()
 
         present = (k, v) if use_cache else None
 
@@ -138,31 +162,53 @@ class MPSOptimizedAttention(nn.Module):
         k = k.transpose(1, 2).contiguous()
         v = v.transpose(1, 2).contiguous()
 
-        # 8. Calculate attention scores
-        attn_scores = torch.matmul(q, k.transpose(-1, -2)) * self.scale
-        attn_scores = attn_scores.contiguous()
+        # 8. Optimized attention computation for incremental decoding
+        if layer_past is not None and q.shape[-2] == 1:
+            # Incremental decoding: only compute attention for the new token
+            # q: [batch, heads, 1, head_dim] - only the new token
+            # k: [batch, heads, full_seq_len, head_dim] - all tokens including cache
+            # v: [batch, heads, full_seq_len, head_dim] - all tokens including cache
+            
+            # Compute attention scores only for new token against all positions
+            attn_scores = torch.matmul(q, k.transpose(-1, -2)) * self.scale  # [batch, heads, 1, full_seq_len]
+            attn_scores = attn_scores.contiguous()
+            
+            # No causal mask needed for incremental decode (new token can see all previous)
+            attn_weights = F.softmax(attn_scores, dim=-1)
+            attn_weights = attn_weights.contiguous()
+            
+            # Compute output for new token
+            attn_output = torch.matmul(attn_weights, v)  # [batch, heads, 1, head_dim]
+            attn_output = attn_output.contiguous()
+        else:
+            # Full attention computation (prefill or when no cache)
+            attn_scores = torch.matmul(q, k.transpose(-1, -2)) * self.scale
+            attn_scores = attn_scores.contiguous()
 
-        # 9. Apply causal mask for autoregressive generation
-        if layer_past is None:
-            q_len, k_len = q.size(-2), k.size(-2)
-            mask = torch.triu(torch.ones((q_len, k_len), device=device, dtype=torch.bool), diagonal=1)
-            attn_scores.masked_fill_(mask.unsqueeze(0).unsqueeze(0), torch.finfo(attn_scores.dtype).min)
+            # Apply causal mask for autoregressive generation
+            if layer_past is None:
+                q_len, k_len = q.size(-2), k.size(-2)
+                mask = torch.triu(torch.ones((q_len, k_len), device=device, dtype=torch.bool), diagonal=1)
+                attn_scores.masked_fill_(mask.unsqueeze(0).unsqueeze(0), torch.finfo(attn_scores.dtype).min)
 
-        # 10. Apply softmax to get attention weights
-        attn_weights = F.softmax(attn_scores, dim=-1)
-        attn_weights = attn_weights.contiguous()
-
-        # 11. Calculate weighted sum to get outputs
-        attn_output = torch.matmul(attn_weights, v)
-        attn_output = attn_output.contiguous()
+            # Apply softmax and compute output
+            attn_weights = F.softmax(attn_scores, dim=-1)
+            attn_weights = attn_weights.contiguous()
+            attn_output = torch.matmul(attn_weights, v)
+            attn_output = attn_output.contiguous()
 
         # 12. Reshape for output projection
         attn_output = attn_output.transpose(1, 2).contiguous()
 
-        # 13. Merge heads
-        attn_output = attn_output.reshape(
-            batch_size, q.shape[2], self.num_attention_heads * self.head_dim
-        )
+        # 13. Merge heads - handle both single token and multi-token cases
+        if layer_past is not None and attn_output.shape[1] == 1:
+            # Single token case
+            attn_output = attn_output.reshape(batch_size, 1, self.num_attention_heads * self.head_dim)
+        else:
+            # Multi-token case
+            attn_output = attn_output.reshape(
+                batch_size, q.shape[2], self.num_attention_heads * self.head_dim
+            )
 
         # 14. Apply output projection
         output = self.o_proj(attn_output.contiguous())

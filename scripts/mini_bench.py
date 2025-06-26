@@ -7,10 +7,12 @@ from nanovllm import LLM, SamplingParams
 def main():
     try:
         seed(0)
-        # Using small values for faster testing
-        num_seqs = 2
-        max_input_len = 100
-        max_output_len = 10
+        # Benchmark settings for large batch
+        num_seqs = 32  # Reduced batch size for stability
+        min_input_len = 100
+        max_input_len = 1024
+        min_output_len = 100
+        max_output_len = 1024
 
         # Local path or Hugging Face path
         path = os.path.expanduser("Qwen/Qwen3-0.6B")
@@ -18,9 +20,18 @@ def main():
         llm = LLM(path, enforce_eager=False, max_model_len=4096)
         print("Model loaded successfully")
 
-        print(f"Generating {num_seqs} random sequences...")
-        prompt_token_ids = [[randint(0, 10000) for _ in range(randint(50, max_input_len))] for _ in range(num_seqs)]
-        sampling_params = [SamplingParams(temperature=0.6, ignore_eos=True, max_tokens=randint(5, max_output_len)) for _ in range(num_seqs)]
+        print("Model: Qwen3-0.6B")
+        print(f"Total Requests: {num_seqs} sequences")
+        print(f"Input Length: Randomly sampled between {min_input_len}–{max_input_len} tokens")
+        print(f"Output Length: Randomly sampled between {min_output_len}–{max_output_len} tokens")
+        prompt_token_ids = [
+            [randint(0, 10000) for _ in range(randint(min_input_len, max_input_len))]
+            for _ in range(num_seqs)
+        ]
+        sampling_params = [
+            SamplingParams(temperature=0.6, ignore_eos=True, max_tokens=randint(min_output_len, max_output_len))
+            for _ in range(num_seqs)
+        ]
 
         print("Running warmup...")
         result = llm.generate(["Testing warmup: "], SamplingParams())

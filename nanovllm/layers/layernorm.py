@@ -36,13 +36,19 @@ class RMSNorm(nn.Module):
         input_dtype = x.dtype
         
         # Compute variance in float32, exactly as HF does
-        variance = x.to(torch.float32).pow(2).mean(-1, keepdim=True)
+        if x.dtype != torch.float32:
+            variance = x.to(torch.float32).pow(2).mean(-1, keepdim=True)
+        else:
+            variance = x.pow(2).mean(-1, keepdim=True)
         
         # Apply normalization - convert to float32, normalize, then back to input dtype
         x = x * torch.rsqrt(variance + self.eps)
         
         # Apply weight and return to original dtype, exactly as HF does
-        return self.weight * x.to(input_dtype)
+        if x.dtype != input_dtype:
+            return self.weight * x.to(input_dtype)
+        else:
+            return self.weight * x
 
     @optional_torch_compile
     def add_rms_forward(
@@ -57,9 +63,14 @@ class RMSNorm(nn.Module):
         orig_dtype = x.dtype
         
         # Ensure all tensors are float32 for precise computation
-        x = x.to(torch.float32)
-        residual = residual.to(torch.float32)
-        weight = self.weight.to(torch.float32)
+        if x.dtype != torch.float32:
+            x = x.to(torch.float32)
+        if residual.dtype != torch.float32:
+            residual = residual.to(torch.float32)
+        if self.weight.dtype != torch.float32:
+            weight = self.weight.to(torch.float32)
+        else:
+            weight = self.weight
         
         # Ensure residual matches x's shape by slicing to the same batch size
         if residual.shape[0] != x.shape[0]:
@@ -81,8 +92,10 @@ class RMSNorm(nn.Module):
         x = x * weight
         
         # Return to original dtype
-        x = x.to(orig_dtype)
-        residual_out = residual_out.to(orig_dtype)
+        if x.dtype != orig_dtype:
+            x = x.to(orig_dtype)
+        if residual_out.dtype != orig_dtype:
+            residual_out = residual_out.to(orig_dtype)
         
         return x, residual_out
 

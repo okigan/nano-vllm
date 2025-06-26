@@ -73,3 +73,10 @@ We are working with a PyTorch-based LLM inference engine (nano-vllm) focused on 
 - **Deprecated Libraries:** Avoid using deprecated or outdated libraries.
 - **Dependency Management:** Manage dependencies using `pyproject.toml` and uv package manager.
 - **Formatting and Type Checking:** Format files with ruff and check for type hints
+
+
+---
+
+### Model Loading and Initialization
+
+- **Preferred Models:** Qwen/Qwen3-0.6B

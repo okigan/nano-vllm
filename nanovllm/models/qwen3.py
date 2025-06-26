@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from transformers.configuration_utils import PretrainedConfig
+from typing import Optional
 
 from ..layers.attention import SelfAttention
 from ..layers.activation import SiluAndMul
@@ -71,7 +72,9 @@ class Qwen3DecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         cos: torch.Tensor,
         sin: torch.Tensor,
-    ) -> torch.Tensor:
+        layer_past: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        use_cache: bool = False
+    ) -> tuple[torch.Tensor, Optional[tuple[torch.Tensor, torch.Tensor]]]:
         """
         Forward pass for the decoder layer, exactly matching HuggingFace implementation.
         
@@ -93,12 +96,12 @@ class Qwen3DecoderLayer(nn.Module):
         # Get sequence length for attention mask
         batch_size, seq_len = hidden_states.shape[:2]
         
-        # Create parameters for attention
+        # Create parameters for attention with cache support
         kv_cache_params = {
             'cu_seqlens': torch.tensor([0, seq_len], device=hidden_states.device),
             'max_s': seq_len,
-            'layer_past': None,  # No caching in this test case
-            'use_cache': False   # No caching in this test case
+            'layer_past': layer_past,
+            'use_cache': use_cache
         }
         
         # Apply self-attention - the attention module includes:
@@ -107,7 +110,7 @@ class Qwen3DecoderLayer(nn.Module):
         # 3. Rotary embeddings
         # 4. Attention computation
         # 5. Output projection
-        attn_output, _ = self.self_attn(
+        attn_output, present = self.self_attn(
             hidden_states=hidden_states, 
             cos=cos, 
             sin=sin,
@@ -130,7 +133,7 @@ class Qwen3DecoderLayer(nn.Module):
         # Add residual connection after MLP
         hidden_states = residual + mlp_output
         
-        return hidden_states
+        return hidden_states, present
 
 
 class Qwen3Model(nn.Module):
@@ -184,28 +187,46 @@ class Qwen3Model(nn.Module):
         
         return cos, sin
 
-    def forward(self, input_ids: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, 
+        input_ids: torch.Tensor, 
+        positions: torch.Tensor,
+        kv_caches: Optional[list[tuple[torch.Tensor, torch.Tensor]]] = None,
+        use_cache: bool = False
+    ) -> tuple[torch.Tensor, Optional[list[tuple[torch.Tensor, torch.Tensor]]]]:
         # Get embeddings from input ids
         hidden_states = self.embed_tokens(input_ids)
         
         # Get rotary embeddings - critically important to generate these correctly
         cos, sin = self.get_rotary_embedding(positions)
         
+        # Initialize cache list if using cache
+        new_kv_caches = [] if use_cache else None
+        
         # Process through decoder layers
         for i, layer in enumerate(self.layers):
+            # Get layer cache if available
+            layer_past = kv_caches[i] if kv_caches is not None else None
+            
             # Apply each transformer layer with the same rotary embeddings
             # This matches HuggingFace's implementation where the same
             # rotary embeddings are used for each layer
-            hidden_states = layer(
+            hidden_states, present = layer(
                 hidden_states=hidden_states,
                 cos=cos,
                 sin=sin,
+                layer_past=layer_past,
+                use_cache=use_cache
             )
+            
+            # Store new cache if using cache
+            if use_cache and new_kv_caches is not None:
+                new_kv_caches.append(present)
             
         # Apply final normalization
         hidden_states = self.norm(hidden_states)
         
-        return hidden_states
+        return hidden_states, new_kv_caches
 
 
 class Qwen3ForCausalLM(nn.Module):
@@ -255,10 +276,46 @@ class Qwen3ForCausalLM(nn.Module):
         if positions.dim() == 1:
             positions = positions.unsqueeze(0)  # [1, seq_len]
         
-        # Get hidden states from the model
-        hidden_states = self.model(input_ids, positions)
+        # Get hidden states from the model (no cache support here for compatibility)
+        hidden_states, _ = self.model(input_ids, positions, kv_caches=None, use_cache=False)
         
         # Project to vocabulary
         logits = self.lm_head(hidden_states)
         
         return logits
+    
+    def forward_with_cache(
+        self, 
+        input_ids: torch.Tensor, 
+        positions: torch.Tensor,
+        kv_caches: Optional[list[tuple[torch.Tensor, torch.Tensor]]] = None,
+        use_cache: bool = True
+    ) -> tuple[torch.Tensor, Optional[list[tuple[torch.Tensor, torch.Tensor]]]]:
+        """
+        Forward pass with KV cache support for efficient incremental decoding.
+        
+        Args:
+            input_ids: Token IDs [batch_size, seq_len] or [seq_len] 
+            positions: Position IDs [batch_size, seq_len] or [seq_len]
+            kv_caches: Previous KV caches for incremental decoding
+            use_cache: Whether to return and use KV caches
+            
+        Returns:
+            logits: Output logits [batch_size, seq_len, vocab_size]
+            new_kv_caches: Updated KV caches for next iteration
+        """
+        # Ensure input_ids has batch dimension
+        if input_ids.dim() == 1:
+            input_ids = input_ids.unsqueeze(0)  # [1, seq_len]
+            
+        # Ensure positions has batch dimension and matches input_ids shape
+        if positions.dim() == 1:
+            positions = positions.unsqueeze(0)  # [1, seq_len]
+        
+        # Get hidden states from the model with cache support
+        hidden_states, new_kv_caches = self.model(input_ids, positions, kv_caches=kv_caches, use_cache=use_cache)
+        
+        # Project to vocabulary
+        logits = self.lm_head(hidden_states)
+        
+        return logits, new_kv_caches
