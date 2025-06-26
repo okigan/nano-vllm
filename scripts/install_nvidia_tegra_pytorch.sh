@@ -31,13 +31,19 @@ fi
 pip uninstall -y torch torchvision torchaudio || true
 
 
+
+# Download directory for wheels
+DOWNLOAD_DIR="./build/download"
+mkdir -p "$DOWNLOAD_DIR"
+TORCH_WHL_PATH="$DOWNLOAD_DIR/$TORCH_WHL"
+
 # Download and install PyTorch wheel if not already present
-if [ ! -f "$TORCH_WHL" ]; then
-    wget -O "$TORCH_WHL" "$TORCH_WHL_URL"
+if [ ! -f "$TORCH_WHL_PATH" ]; then
+    wget -O "$TORCH_WHL_PATH" "$TORCH_WHL_URL"
 else
-    echo "$TORCH_WHL already exists, skipping download."
+    echo "$TORCH_WHL_PATH already exists, skipping download."
 fi
-uv pip install "$TORCH_WHL"
+uv pip install "$TORCH_WHL_PATH"
 
 # Verify CUDA availability
 uv run python3 -c "import torch; print('CUDA available:', torch.cuda.is_available()); print('Device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'No CUDA')"
