@@ -6,8 +6,15 @@ concurrency:
   cancel-in-progress: false
 
 on:
+  push:
+    branches:
+      - main
   pull_request:
+    branches:
+      - '**'
   workflow_dispatch:
+    # Allows manual trigger on any branch
+    inputs: {}
 
 jobs:
   test:
