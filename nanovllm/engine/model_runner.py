@@ -193,12 +193,18 @@ class ModelRunner:
                                 probs = probs / probs.sum()  # Renormalize
                                 next_token_id = torch.multinomial(probs, num_samples=1).item()
                         next_token_ids.append(next_token_id)
-                    # Store context for each sequence
+                    # Store context for each sequence with KV cache
                     for i, seq in enumerate(seqs):
                         seq_id = seq.seq_id
+                        # Generate KV cache for this sequence during prefill
+                        seq_input_ids = torch.tensor(seq.token_ids, device=self.device).unsqueeze(0)
+                        seq_positions = torch.arange(0, len(seq.token_ids), dtype=torch.long, device=self.device).unsqueeze(0)
+                        _, kv_cache = self.model.forward_with_cache(seq_input_ids, seq_positions, kv_caches=None, use_cache=True)
+                        
                         self.kv_caches[seq_id] = {
                             'position': seq_lens[i].item(),
-                            'tokens': seq.token_ids.copy()
+                            'tokens': seq.token_ids.copy(),
+                            'kv_cache': kv_cache  # Store the actual KV cache
                         }
                     # Per-sequence processing (avoids rotary embedding shape mismatch)
                     next_token_ids = []
@@ -208,8 +214,8 @@ class ModelRunner:
                         input_ids = torch.tensor(seq.token_ids, device=self.device).unsqueeze(0).contiguous()
                         # [1, seq_len]
                         positions = torch.arange(0, input_ids.shape[1], dtype=torch.long, device=self.device).unsqueeze(0)
-                        # [1, seq_len, vocab_size]
-                        logits = self.model(input_ids, positions)
+                        # [1, seq_len, vocab_size], kv_cache
+                        logits, kv_cache = self.model.forward_with_cache(input_ids, positions, kv_caches=None, use_cache=True)
                         # [vocab_size]
                         next_token_logits = logits[0, -1, :]
                         temperature = seq.sampling_params.temperature
@@ -234,7 +240,8 @@ class ModelRunner:
                         next_token_ids.append(next_token_id)
                         self.kv_caches[seq_id] = {
                             'position': input_ids.shape[1],
-                            'tokens': seq.token_ids.copy()
+                            'tokens': seq.token_ids.copy(),
+                            'kv_cache': kv_cache  # Store the actual KV cache
                         }
                 
                 if not self.is_mps:  # Skip verbose logging on MPS for performance
@@ -253,10 +260,8 @@ class ModelRunner:
     def _run_decode(self, seqs: list["Sequence"]) -> list[int]:
         """
         Run decode-phase (next token prediction) with MPS optimizations
-        
         Args:
             seqs: List of sequences to generate the next token for
-        
         Returns:
             List of generated next token IDs
         """
@@ -279,7 +284,7 @@ class ModelRunner:
 
     def _decode_single_sequence(self, seq: "Sequence") -> int:
         """
-        Process a single sequence for next-token prediction with MPS optimizations
+        Process a single sequence for next-token prediction with optimized KV caching
         
         Args:
             seq: Sequence to process
@@ -288,35 +293,98 @@ class ModelRunner:
             Next token ID
         """
         seq_id: int = seq.seq_id
-        # Check if we have this sequence in our cache 
+         # Check if we have this sequence in our cache 
         if seq_id not in self.kv_caches:
             print(f"WARNING: Sequence {seq_id} not found in KV cache. Creating new entry.")
             self.kv_caches[seq_id] = {
                 'position': len(seq.token_ids),
-                'tokens': seq.token_ids.copy()
+                'tokens': seq.token_ids.copy(),
+                'kv_cache': None  # Will store the actual KV cache
             }
-        tokens: list[int] = self.kv_caches[seq_id]['tokens']
-        # [1, seq_len]
-        input_ids: torch.Tensor = torch.tensor(tokens, device=self.device).unsqueeze(0)
-        # [1, seq_len]
-        positions: torch.Tensor = torch.arange(0, len(tokens), dtype=torch.long, device=self.device).unsqueeze(0)
-        # [1, seq_len, vocab_size]
-        logits: torch.Tensor = self.model(input_ids, positions)
-        # [vocab_size]
-        next_token_logits: torch.Tensor = logits[0, -1, :]
+
+        cache_entry = self.kv_caches[seq_id]
+        
+        # Ensure all required keys exist
+        if 'kv_cache' not in cache_entry:
+            cache_entry['kv_cache'] = None
+        if 'tokens' not in cache_entry:
+            cache_entry['tokens'] = seq.token_ids.copy()
+        if 'position' not in cache_entry:
+            cache_entry['position'] = len(seq.token_ids)
+            
+        current_tokens = seq.token_ids
+        cached_tokens = cache_entry['tokens']
+        
+        # Determine if we need incremental decoding or full prefill
+        if (cache_entry['kv_cache'] is not None and 
+            len(current_tokens) == len(cached_tokens) + 1 and
+            current_tokens[:-1] == cached_tokens):
+            # Incremental decode: only process the new token
+            new_token = current_tokens[-1]
+            # [1, 1] - only the new token
+            input_ids = torch.tensor([[new_token]], device=self.device, dtype=torch.long)
+            # Position for the new token
+            position = len(cached_tokens)
+            # [1, 1] 
+            positions = torch.tensor([[position]], device=self.device, dtype=torch.long)
+            
+            # Use cached KV states for efficient generation
+            # [1, 1, vocab_size], updated_cache
+            logits, new_kv_cache = self.model.forward_with_cache(
+                input_ids=input_ids,
+                positions=positions,
+                kv_caches=cache_entry['kv_cache'],
+                use_cache=True
+            )
+            
+            # Update cache
+            cache_entry['kv_cache'] = new_kv_cache
+            cache_entry['tokens'] = current_tokens.copy()
+            cache_entry['position'] = len(current_tokens)
+            
+            # [vocab_size] - logits for the new token
+            next_token_logits = logits[0, -1, :]
+            
+        else:
+            # Full prefill: process the entire sequence
+            # [1, seq_len]
+            input_ids = torch.tensor(current_tokens, device=self.device).unsqueeze(0)
+            # [1, seq_len]
+            positions = torch.arange(0, len(current_tokens), dtype=torch.long, device=self.device).unsqueeze(0)
+            
+            # [1, seq_len, vocab_size], new_cache
+            logits, new_kv_cache = self.model.forward_with_cache(
+                input_ids=input_ids,
+                positions=positions,
+                kv_caches=None,  # Start fresh
+                use_cache=True
+            )
+            
+            # Update cache
+            cache_entry['kv_cache'] = new_kv_cache
+            cache_entry['tokens'] = current_tokens.copy()
+            cache_entry['position'] = len(current_tokens)
+            
+            # [vocab_size] - logits for the last token
+            next_token_logits = logits[0, -1, :]
+        
         # Apply repetition penalty
         if self.is_mps:
-            self._apply_repetition_penalty_mps(next_token_logits, tokens)
+            self._apply_repetition_penalty_mps(next_token_logits, current_tokens)
         else:
-            self._apply_repetition_penalty(next_token_logits, tokens)
+            self._apply_repetition_penalty(next_token_logits, current_tokens)
+        
         temperature: float = getattr(seq.sampling_params, 'temperature', 1.0)
+        
         # Validate device compatibility
         if next_token_logits.device != self.device:
             next_token_logits = next_token_logits.to(self.device)
+        
         # Sanitize logits before sampling
         if torch.isnan(next_token_logits).any() or torch.isinf(next_token_logits).any():
             print(f"[ERROR] NaN or Inf detected in logits before sampling. Logits: {next_token_logits}")
             next_token_logits = torch.nan_to_num(next_token_logits, nan=0.0, posinf=0.0, neginf=0.0)
+        
         # Sample next token
         if temperature <= 1e-6:
             # Greedy decoding
@@ -337,10 +405,10 @@ class ModelRunner:
             else:
                 probs = probs / probs.sum()  # Renormalize
                 next_token_id: int = int(torch.multinomial(probs, num_samples=1).item())
-        # Update cache with the new token
-        self.kv_caches[seq_id]['tokens'].append(next_token_id)
-        # Update position property for sequence tracking
-        self.kv_caches[seq_id]['position'] = len(self.kv_caches[seq_id]['tokens'])
+        # Update cache with the new token - the KV cache was already updated above
+        cache_entry['tokens'].append(next_token_id)
+        cache_entry['position'] = len(cache_entry['tokens'])
+        
         return next_token_id
         
     def _apply_repetition_penalty(self, logits: torch.Tensor, tokens: list) -> None:
