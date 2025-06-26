@@ -4,6 +4,11 @@ This repo contains Nano-vLLM with modifications for Mac MPS support and examples
   <img src="./docs/media/swagger.png" alt="Nano-vLLM Swagger UI" width="600"/>
 </p>
 
+# Development setup
+```
+make install
+make run-server
+```
 
 # Nano-vLLM
 

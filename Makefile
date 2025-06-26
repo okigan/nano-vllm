@@ -3,7 +3,7 @@
 .PHONY: help test lint format clean bench mini-bench
 help:
 	@echo "Available targets:"
-	@echo "  install         Install all dependencies using uv"
+	@echo "  install         Install all dependencies (auto-detects Jetson/Orin)"
 	@echo "  test            Run all tests with pytest"
 	@echo "  test-ci         Run tests as in CI (skipping heavy tests)"
 	@echo "  lint            Run ruff for linting"
@@ -15,12 +15,28 @@ help:
 	@echo "  mini-bench      Run mini benchmark (scripts/mini_bench.py)"
 	@echo "  act             Run GitHub Actions workflow locally with act"
 	@echo "  mini-bench  Run mini benchmark (scripts/mini_bench.py)"
-# Install dependencies
+
+
 install:
+	@if [ -f /proc/device-tree/compatible ] && grep -qiE 'nvidia,tegra|nvidia,orin' /proc/device-tree/compatible; then \
+		echo "[INFO] Detected NVIDIA Jetson/Orin platform. Running Jetson setup..."; \
+		$(MAKE) setup-jetson; \
+	else \
+		echo "[INFO] Running standard development setup..."; \
+		$(MAKE) setup-regular; \
+	fi
+
+# Setup for NVIDIA Jetson/Orin (installs dependencies and NVIDIA PyTorch wheel)
+setup-jetson:
 	uv sync
+	bash scripts/install_nvidia_tegra_pytorch.sh
+
+# Setup for development (installs all dev dependencies)
+setup-regular:
+	uv sync
+	uv pip install torch
 
 # Run all tests
-
 test:
 	pytest tests
 

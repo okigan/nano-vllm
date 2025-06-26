@@ -1,9 +1,17 @@
+
 import os
 from torch import nn
 import torch
 import re
 from huggingface_hub import snapshot_download
 from transformers import AutoModelForCausalLM
+# Patch for Qwen2/transformers NoneType error (see https://github.com/huggingface/transformers/issues/1239)
+try:
+    from transformers import modeling_utils
+    if not hasattr(modeling_utils, "ALL_PARALLEL_STYLES") or modeling_utils.ALL_PARALLEL_STYLES is None:
+        modeling_utils.ALL_PARALLEL_STYLES = ["tp", "none", "colwise", "rowwise"]
+except Exception as e:
+    print(f"[DEBUG] Could not patch ALL_PARALLEL_STYLES: {e}")
 
 
 def load_model(model: nn.Module, path: str):
@@ -31,7 +39,13 @@ def load_model(model: nn.Module, path: str):
     
     # Use transformers to load the model first as reference
     print(f"Using transformers to load reference model from {path} with dtype {load_dtype}")
-    ref_model = AutoModelForCausalLM.from_pretrained(path, torch_dtype=load_dtype, trust_remote_code=True)
+    from transformers import AutoConfig
+    config = AutoConfig.from_pretrained(path, trust_remote_code=True)
+    ref_model = AutoModelForCausalLM.from_pretrained(path, torch_dtype=load_dtype, trust_remote_code=True, config=config)
+    # Patch config after instantiation to avoid NoneType errors in HF Qwen2 model
+    for attr in ("tensor_parallel_style", "parallel_style"):
+        if not hasattr(ref_model.config, attr) or getattr(ref_model.config, attr) is None:
+            setattr(ref_model.config, attr, "none")
     
     # Confirm the reference model loaded correctly
     print(f"[DEBUG] Reference model loaded. Class: {type(ref_model).__name__}")
