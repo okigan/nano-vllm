@@ -21,8 +21,7 @@ def test_model_generations():
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     hf_model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=torch.float16,
-        device_map="auto"
+        torch_dtype=torch.float16
     )
     
     # Generate with HF model
