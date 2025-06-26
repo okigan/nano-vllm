@@ -263,6 +263,72 @@ def _optimized_run_decode(self, seqs):
 
 def optimize_model_runner(model_runner):
     """
-    Apply all optimizations to a ModelRunner
+    Apply CRITICAL optimization: eliminate redundant forward passes in prefill
     """
-    return apply_optimizations(model_runner)
+    print("Applying CRITICAL performance optimization...")
+    
+    def optimized_run_method(seqs, is_prefill):
+        """
+        FIXED: Single forward pass per sequence instead of triple computation
+        
+        Original nano-vllm was doing:
+        1. Batched forward pass for logits
+        2. Individual forward passes for KV cache  
+        3. More individual forward passes
+        
+        This optimization eliminates the redundancy!
+        """
+        if not seqs:
+            return []
+            
+        # Ensure model is ready for inference  
+        model_runner._setup_for_inference()
+        
+        with torch.no_grad():
+            if is_prefill:
+                # OPTIMIZED: Single forward pass per sequence 
+                next_token_ids = []
+                
+                for seq in seqs:
+                    seq_id = seq.seq_id
+                    # Single optimized forward pass that gets both logits and KV cache
+                    input_ids = torch.tensor(seq.token_ids, device=model_runner.device).unsqueeze(0).contiguous()
+                    positions = torch.arange(0, input_ids.shape[1], dtype=torch.long, device=model_runner.device).unsqueeze(0)
+                    
+                    # ONE forward pass instead of multiple!
+                    logits, kv_cache = model_runner.model.forward_with_cache(input_ids, positions, kv_caches=None, use_cache=True)
+                    
+                    # Get next token from logits
+                    next_token_logits = logits[0, -1, :]
+                    temperature = seq.sampling_params.temperature
+                    
+                    if temperature <= 1e-6:
+                        next_token_id = torch.argmax(next_token_logits).item()
+                    else:
+                        # Streamlined sampling
+                        scaled_logits = next_token_logits / temperature
+                        probs = torch.softmax(scaled_logits, dim=0)
+                        next_token_id = torch.multinomial(probs, num_samples=1).item()
+                    
+                    next_token_ids.append(next_token_id)
+                    
+                    # Store KV cache efficiently
+                    model_runner.kv_caches[seq_id] = {
+                        'position': input_ids.shape[1],
+                        'tokens': seq.token_ids.copy(),
+                        'kv_cache': kv_cache
+                    }
+                
+                return next_token_ids
+            else:
+                # Use optimized decode method
+                return model_runner._run_decode(seqs)
+    
+    # Replace the run method
+    model_runner.run = optimized_run_method
+    
+    print("✅ CRITICAL optimization applied:")
+    print("  🔥 Eliminated redundant forward passes (3x -> 1x computation)")
+    print("  🔥 Streamlined sampling process")
+    
+    return model_runner
