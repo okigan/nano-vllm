@@ -32,7 +32,7 @@ jobs:
       - name: Install dev dependencies with uv
         run: |
           source .venv/bin/activate
-          uv sync --dev
+          make install
 
       - name: Run tests with uv
         run: |
