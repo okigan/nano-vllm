@@ -93,11 +93,36 @@ class SelfAttention(nn.Module):
         q = self.rotary_emb(q, cos, sin)
         k = self.rotary_emb(k, cos, sin)
 
-        # 5. KV cache
+        # 5. KV cache - optimized concatenation
         if layer_past is not None:
             past_key, past_value = layer_past
-            k = torch.cat([past_key, k], dim=1)
-            v = torch.cat([past_value, v], dim=1)
+            # Use more efficient concatenation with pre-allocation when possible
+            if k.shape[1] == 1:  # Single token decode
+                # For single token, try in-place operations when possible
+                batch_size, past_seq_len = past_key.shape[0], past_key.shape[1]
+                new_seq_len = past_seq_len + 1
+                
+                # Create new tensors with exact size needed
+                new_k = torch.empty(
+                    batch_size, new_seq_len, past_key.shape[2], past_key.shape[3],
+                    dtype=past_key.dtype, device=past_key.device
+                )
+                new_v = torch.empty(
+                    batch_size, new_seq_len, past_value.shape[2], past_value.shape[3],
+                    dtype=past_value.dtype, device=past_value.device
+                )
+                
+                # Copy in chunks to minimize memory operations
+                new_k[:, :past_seq_len] = past_key
+                new_k[:, past_seq_len:] = k
+                new_v[:, :past_seq_len] = past_value
+                new_v[:, past_seq_len:] = v
+                
+                k, v = new_k, new_v
+            else:
+                # Fall back to standard concatenation for multi-token sequences
+                k = torch.cat([past_key, k], dim=1)
+                v = torch.cat([past_value, v], dim=1)
         present = (k, v) if use_cache else None
 
         # 6. Grouped-query attention
@@ -140,35 +165,43 @@ class SelfAttention(nn.Module):
                     v_expanded[:, :, v.shape[2]:, :] = v[:, :, -1:, :].repeat(1, 1, target_seq_len - v.shape[2], 1)
                     v = v_expanded
 
-        # 10. Attention scores
+        # 10. Optimized attention computation for incremental decoding
         scale = 1.0 / math.sqrt(self.head_dim)
-        attn_scores = torch.matmul(q, k.transpose(-1, -2)) * scale  # [batch, num_heads, seq_len, seq_len]
-
-        # 11. Causal mask (cache per device/shape/dtype)
-        if layer_past is None:
-            q_len, k_len = q.size(-2), k.size(-2)
-            mask_key = (device, attn_scores.dtype, q_len, k_len)
-            if not hasattr(self, '_causal_mask_cache'):
-                self._causal_mask_cache = {}
-            if mask_key not in self._causal_mask_cache:
-                causal_mask = torch.triu(torch.ones((q_len, k_len), device=device), diagonal=1).bool()
-                causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)  # [1, 1, q_len, k_len]
-                self._causal_mask_cache[mask_key] = causal_mask
-            else:
-                causal_mask = self._causal_mask_cache[mask_key]
-            attn_scores = attn_scores + causal_mask.to(attn_scores.dtype) * torch.finfo(attn_scores.dtype).min
-
-        # 12. Softmax (in-place)
-        attn_weights = torch.nn.functional.softmax(attn_scores, dim=-1)
-
-        # 13. Attention output (no try/except for CUDA)
-        if is_cuda or not is_mps:
-            attn_output = torch.matmul(attn_weights, v)  # [batch, num_heads, seq_len, head_dim]
+        
+        if layer_past is not None and q.shape[-2] == 1:
+            # Incremental decoding: only compute attention for the new token
+            attn_scores = torch.matmul(q, k.transpose(-1, -2)) * scale  # [batch, heads, 1, full_seq_len]
+            
+            # No causal mask needed for incremental decode (new token can see all previous)
+            attn_weights = torch.nn.functional.softmax(attn_scores, dim=-1)
+            attn_output = torch.matmul(attn_weights, v)  # [batch, heads, 1, head_dim]
         else:
-            # MPS fallback (unchanged)
+            # Full attention computation (prefill or when no cache)
+            attn_scores = torch.matmul(q, k.transpose(-1, -2)) * scale  # [batch, num_heads, seq_len, seq_len]
+
+            # Apply causal mask for autoregressive generation
+            if layer_past is None:
+                q_len, k_len = q.size(-2), k.size(-2)
+                mask_key = (device, attn_scores.dtype, q_len, k_len)
+                if not hasattr(self, '_causal_mask_cache'):
+                    self._causal_mask_cache = {}
+                if mask_key not in self._causal_mask_cache:
+                    causal_mask = torch.triu(torch.ones((q_len, k_len), device=device), diagonal=1).bool()
+                    causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)  # [1, 1, q_len, k_len]
+                    self._causal_mask_cache[mask_key] = causal_mask
+                else:
+                    causal_mask = self._causal_mask_cache[mask_key]
+                attn_scores = attn_scores + causal_mask.to(attn_scores.dtype) * torch.finfo(attn_scores.dtype).min
+
+            # Apply softmax and compute output
+            attn_weights = torch.nn.functional.softmax(attn_scores, dim=-1)
+            attn_output = torch.matmul(attn_weights, v)  # [batch, num_heads, seq_len, head_dim]
+
+        # 13. Handle MPS fallback if needed
+        if is_mps and attn_output is None:
             try:
                 attn_output = torch.matmul(attn_weights, v)
-            except RuntimeError as e:
+            except RuntimeError:
                 try:
                     attn_weights_cpu = attn_weights.cpu()
                     v_cpu = v.cpu()
